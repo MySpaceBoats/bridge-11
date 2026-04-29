@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev --port 3001",
+    "build": "tsc --noEmit",
     "deploy": "wrangler deploy",
     "type-check": "tsc --noEmit"
   },

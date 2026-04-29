@@ -9,19 +9,20 @@ import { Header } from '@/components/layout/Header';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const { isAuthenticated, fetchMe } = useAuthStore();
+  const { isAuthenticated, isLoading } = useAuthStore();
   const { fetchFamilies } = useFamilyStore();
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!isLoading && !isAuthenticated) {
       router.push('/login');
       return;
     }
-    fetchMe();
-    fetchFamilies();
-  }, [isAuthenticated]);
+    if (isAuthenticated) {
+      fetchFamilies();
+    }
+  }, [isAuthenticated, isLoading]);
 
-  if (!isAuthenticated) return null;
+  if (isLoading || !isAuthenticated) return null;
 
   return (
     <div className="min-h-screen bg-gray-50">

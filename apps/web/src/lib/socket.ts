@@ -1,27 +1,52 @@
-import { io, Socket } from 'socket.io-client';
+import type { RealtimeChannel } from '@supabase/supabase-js';
+import { supabase } from './supabase';
 
-let chatSocket: Socket | null = null;
+const channels: Map<string, RealtimeChannel> = new Map();
 
-export function getChatSocket(): Socket {
-  if (!chatSocket) {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : '';
-    const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001';
-    chatSocket = io(`${WS_URL}/chat`, {
-      auth: { token },
-      autoConnect: false,
-    });
-  }
-  return chatSocket;
+export function subscribeToMessages(
+  groupId: string,
+  onMessage: (payload: any) => void,
+): () => void {
+  const key = `messages:${groupId}`;
+  if (channels.has(key)) return () => unsubscribe(key);
+
+  const channel = supabase
+    .channel(key)
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${groupId}` },
+      (payload) => onMessage(payload.new),
+    )
+    .subscribe();
+
+  channels.set(key, channel);
+  return () => unsubscribe(key);
 }
 
-export function connectChatSocket(): void {
-  const socket = getChatSocket();
-  if (!socket.connected) socket.connect();
+export function subscribeToNotifications(
+  userId: string,
+  onNotification: (payload: any) => void,
+): () => void {
+  const key = `notifications:${userId}`;
+  if (channels.has(key)) return () => unsubscribe(key);
+
+  const channel = supabase
+    .channel(key)
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
+      (payload) => onNotification(payload.new),
+    )
+    .subscribe();
+
+  channels.set(key, channel);
+  return () => unsubscribe(key);
 }
 
-export function disconnectChatSocket(): void {
-  if (chatSocket?.connected) {
-    chatSocket.disconnect();
-    chatSocket = null;
+function unsubscribe(key: string) {
+  const channel = channels.get(key);
+  if (channel) {
+    supabase.removeChannel(channel);
+    channels.delete(key);
   }
 }

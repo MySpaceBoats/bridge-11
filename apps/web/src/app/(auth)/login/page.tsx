@@ -32,7 +32,7 @@ export default function LoginPage() {
       await login(data.email, data.password);
       router.push('/dashboard');
     } catch (err: any) {
-      setError('email', { message: err.response?.data?.message || 'Login failed' });
+      setError('email', { message: err.message || 'Login failed' });
     }
   };
 

@@ -1,84 +1,76 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import type { User, AuthTokens } from '@/types';
-import { authApi } from '@/lib/api';
+import type { User } from '@/types';
+import { supabase } from '@/lib/supabase';
 
 interface AuthState {
   user: User | null;
-  accessToken: string | null;
-  refreshToken: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (data: any) => Promise<void>;
-  logout: () => void;
-  setTokens: (tokens: AuthTokens) => void;
-  fetchMe: () => Promise<void>;
+  register: (data: { email: string; password: string; firstName: string; lastName: string }) => Promise<void>;
+  logout: () => Promise<void>;
+  initialize: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>()(
-  persist(
-    (set, get) => ({
-      user: null,
-      accessToken: null,
-      refreshToken: null,
-      isAuthenticated: false,
-      isLoading: false,
+export const useAuthStore = create<AuthState>((set) => ({
+  user: null,
+  isAuthenticated: false,
+  isLoading: true,
 
-      setTokens: (tokens: AuthTokens) => {
-        localStorage.setItem('accessToken', tokens.accessToken);
-        localStorage.setItem('refreshToken', tokens.refreshToken);
-        set({
-          user: tokens.user,
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken,
-          isAuthenticated: true,
-        });
-      },
+  initialize: async () => {
+    set({ isLoading: true });
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.user) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', session.user.id)
+        .single();
+      set({ user: profile ?? null, isAuthenticated: !!profile, isLoading: false });
+    } else {
+      set({ user: null, isAuthenticated: false, isLoading: false });
+    }
 
-      login: async (email, password) => {
-        set({ isLoading: true });
-        try {
-          const tokens = await authApi.login({ email, password });
-          get().setTokens(tokens);
-        } finally {
-          set({ isLoading: false });
-        }
-      },
+    supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+        set({ user: profile ?? null, isAuthenticated: !!profile });
+      } else {
+        set({ user: null, isAuthenticated: false });
+      }
+    });
+  },
 
-      register: async (data) => {
-        set({ isLoading: true });
-        try {
-          const tokens = await authApi.register(data);
-          get().setTokens(tokens);
-        } finally {
-          set({ isLoading: false });
-        }
-      },
+  login: async (email, password) => {
+    set({ isLoading: true });
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw new Error(error.message);
+    } finally {
+      set({ isLoading: false });
+    }
+  },
 
-      logout: () => {
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('refreshToken');
-        set({ user: null, accessToken: null, refreshToken: null, isAuthenticated: false });
-      },
+  register: async ({ email, password, firstName, lastName }) => {
+    set({ isLoading: true });
+    try {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { first_name: firstName, last_name: lastName } },
+      });
+      if (error) throw new Error(error.message);
+    } finally {
+      set({ isLoading: false });
+    }
+  },
 
-      fetchMe: async () => {
-        try {
-          const user = await authApi.me();
-          set({ user, isAuthenticated: true });
-        } catch {
-          get().logout();
-        }
-      },
-    }),
-    {
-      name: 'auth-storage',
-      partialize: (state) => ({
-        user: state.user,
-        accessToken: state.accessToken,
-        refreshToken: state.refreshToken,
-        isAuthenticated: state.isAuthenticated,
-      }),
-    },
-  ),
-);
+  logout: async () => {
+    await supabase.auth.signOut();
+    set({ user: null, isAuthenticated: false });
+  },
+}));

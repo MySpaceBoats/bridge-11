@@ -1,16 +1,17 @@
 import axios from 'axios';
+import { supabase } from './supabase';
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 export const api = axios.create({
-  baseURL: `${BASE_URL}/api`,
+  baseURL: BASE_URL,
   headers: { 'Content-Type': 'application/json' },
 });
 
-api.interceptors.request.use((config) => {
-  if (typeof window !== 'undefined') {
-    const token = localStorage.getItem('accessToken');
-    if (token) config.headers.Authorization = `Bearer ${token}`;
+api.interceptors.request.use(async (config) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.access_token) {
+    config.headers.Authorization = `Bearer ${session.access_token}`;
   }
   return config;
 });
@@ -19,30 +20,16 @@ api.interceptors.response.use(
   (res) => res,
   async (error) => {
     if (error.response?.status === 401) {
-      const refreshToken = localStorage.getItem('refreshToken');
-      if (refreshToken) {
-        try {
-          const { data } = await axios.post(`${BASE_URL}/api/auth/refresh`, { refreshToken });
-          localStorage.setItem('accessToken', data.accessToken);
-          localStorage.setItem('refreshToken', data.refreshToken);
-          error.config.headers.Authorization = `Bearer ${data.accessToken}`;
-          return api.request(error.config);
-        } catch {
-          localStorage.clear();
-          window.location.href = '/login';
-        }
+      const { data: { session } } = await supabase.auth.refreshSession();
+      if (session) {
+        error.config.headers.Authorization = `Bearer ${session.access_token}`;
+        return api.request(error.config);
       }
+      window.location.href = '/login';
     }
     return Promise.reject(error);
   },
 );
-
-// Auth
-export const authApi = {
-  register: (data: any) => api.post('/auth/register', data).then((r) => r.data),
-  login: (data: any) => api.post('/auth/login', data).then((r) => r.data),
-  me: () => api.get('/auth/me').then((r) => r.data),
-};
 
 // Families
 export const familiesApi = {
@@ -106,7 +93,7 @@ export const feedApi = {
     api.post(`/families/${familyId}/feed/${postId}/like`).then((r) => r.data),
 };
 
-// Media
+// Media — uses signed upload URL pattern (browser → Supabase Storage directly)
 export const mediaApi = {
   getAlbums: (familyId: string) =>
     api.get(`/families/${familyId}/media/albums`).then((r) => r.data),
@@ -114,13 +101,40 @@ export const mediaApi = {
     api.post(`/families/${familyId}/media/albums`, { name, eventId }).then((r) => r.data),
   getAlbum: (familyId: string, albumId: string) =>
     api.get(`/families/${familyId}/media/albums/${albumId}`).then((r) => r.data),
-  uploadMedia: (familyId: string, file: File, albumId?: string) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    if (albumId) formData.append('albumId', albumId);
-    return api.post(`/families/${familyId}/media/upload`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    }).then((r) => r.data);
+  getMedia: (familyId: string, albumId?: string) =>
+    api.get(`/families/${familyId}/media`, { params: albumId ? { albumId } : {} }).then((r) => r.data),
+  deleteMedia: (familyId: string, mediaId: string) =>
+    api.delete(`/families/${familyId}/media/${mediaId}`).then((r) => r.data),
+
+  uploadMedia: async (familyId: string, file: File, albumId?: string) => {
+    // 1. Get signed upload URL from Worker
+    const { signedUrl, path, token } = await api
+      .post(`/families/${familyId}/media/upload-url`, {
+        filename: file.name,
+        mimeType: file.type,
+        albumId,
+      })
+      .then((r) => r.data);
+
+    // 2. PUT file directly to Supabase Storage
+    const uploadRes = await fetch(signedUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type },
+      body: file,
+    });
+    if (!uploadRes.ok) throw new Error('Upload to storage failed');
+
+    // 3. Confirm upload to Worker so it writes the DB record
+    return api
+      .post(`/families/${familyId}/media/confirm`, {
+        path,
+        token,
+        mimeType: file.type,
+        name: file.name,
+        size: file.size,
+        albumId,
+      })
+      .then((r) => r.data);
   },
 };
 
@@ -134,6 +148,8 @@ export const pollsApi = {
     api.get(`/families/${familyId}/polls/${pollId}`).then((r) => r.data),
   vote: (familyId: string, pollId: string, optionIndex: number) =>
     api.post(`/families/${familyId}/polls/${pollId}/vote`, { optionIndex }).then((r) => r.data),
+  delete: (familyId: string, pollId: string) =>
+    api.delete(`/families/${familyId}/polls/${pollId}`).then((r) => r.data),
 };
 
 // Contributions
@@ -146,6 +162,8 @@ export const contributionsApi = {
     api.get(`/families/${familyId}/contributions/${id}`).then((r) => r.data),
   pledge: (familyId: string, id: string, data: any) =>
     api.post(`/families/${familyId}/contributions/${id}/pledge`, data).then((r) => r.data),
+  updatePayment: (familyId: string, paymentId: string, data: any) =>
+    api.patch(`/families/${familyId}/contributions/payments/${paymentId}`, data).then((r) => r.data),
 };
 
 // Notifications
@@ -162,6 +180,7 @@ export const notificationsApi = {
 
 // Users
 export const usersApi = {
+  me: () => api.get('/users/me').then((r) => r.data),
   get: (id: string) => api.get(`/users/${id}`).then((r) => r.data),
   search: (q: string) => api.get('/users/search', { params: { q } }).then((r) => r.data),
   updateProfile: (data: any) => api.patch('/users/profile', data).then((r) => r.data),

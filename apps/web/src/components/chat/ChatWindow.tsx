@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
 import type { Message, ChatGroup } from '@/types';
 import { chatApi } from '@/lib/api';
-import { getChatSocket, connectChatSocket } from '@/lib/socket';
+import { subscribeToMessages } from '@/lib/socket';
 import { useAuthStore } from '@/store/auth.store';
 import { useChatStore } from '@/store/chat.store';
 import { Avatar } from '@/components/ui/Avatar';
@@ -18,7 +18,7 @@ interface ChatWindowProps {
 
 export function ChatWindow({ group, familyId }: ChatWindowProps) {
   const { user } = useAuthStore();
-  const { messages, addMessage, setMessages, typingUsers } = useChatStore();
+  const { messages, addMessage, setMessages } = useChatStore();
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -29,18 +29,11 @@ export function ChatWindow({ group, familyId }: ChatWindowProps) {
       setMessages(group.id, res.data);
     });
 
-    const socket = getChatSocket();
-    connectChatSocket();
-    socket.emit('join_group', { groupId: group.id });
-
-    socket.on('new_message', (msg: Message) => {
-      if (msg.groupId === group.id) addMessage(group.id, msg);
+    const unsubscribe = subscribeToMessages(group.id, (msg: Message) => {
+      addMessage(group.id, msg);
     });
 
-    return () => {
-      socket.off('new_message');
-      socket.emit('leave_group', { groupId: group.id });
-    };
+    return unsubscribe;
   }, [group.id]);
 
   useEffect(() => {
@@ -53,35 +46,35 @@ export function ChatWindow({ group, familyId }: ChatWindowProps) {
     setSending(true);
     setInput('');
     try {
-      const socket = getChatSocket();
-      socket.emit('send_message', { groupId: group.id, content });
+      await chatApi.sendMessage(familyId, group.id, content);
     } finally {
       setSending(false);
     }
   };
 
-  const typing = typingUsers[group.id]?.filter((id) => id !== user?.id) ?? [];
-
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="px-4 py-3 border-b border-gray-200 bg-white">
         <h3 className="font-semibold text-gray-900">{group.name}</h3>
       </div>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-gray-50">
         {groupMessages.map((msg) => {
-          const isMe = msg.sender?.id === user?.id;
+          const isMe = (msg.sender as any)?.id === user?.id;
           return (
             <div key={msg.id} className={cn('flex items-end gap-2', isMe && 'flex-row-reverse')}>
               {!isMe && (
-                <Avatar src={msg.sender?.avatarUrl} firstName={msg.sender?.firstName ?? ''} lastName={msg.sender?.lastName ?? ''} size="xs" />
+                <Avatar
+                  src={(msg.sender as any)?.avatarUrl}
+                  firstName={(msg.sender as any)?.firstName ?? ''}
+                  lastName={(msg.sender as any)?.lastName ?? ''}
+                  size="xs"
+                />
               )}
               <div className={cn('max-w-[70%] space-y-0.5', isMe && 'items-end flex flex-col')}>
                 {!isMe && (
                   <p className="text-xs text-gray-500 px-1">
-                    {msg.sender?.firstName} {msg.sender?.lastName}
+                    {(msg.sender as any)?.firstName} {(msg.sender as any)?.lastName}
                   </p>
                 )}
                 <div
@@ -99,13 +92,9 @@ export function ChatWindow({ group, familyId }: ChatWindowProps) {
             </div>
           );
         })}
-        {typing.length > 0 && (
-          <p className="text-xs text-gray-400 italic px-2">Someone is typing...</p>
-        )}
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
       <div className="px-4 py-3 bg-white border-t border-gray-200 flex items-center gap-3">
         <input
           value={input}

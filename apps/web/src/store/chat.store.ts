@@ -38,7 +38,7 @@ export const useChatStore = create<ChatState>((set) => ({
     set((s) => {
       const current = s.typingUsers[groupId] ?? [];
       const updated = isTyping
-        ? [...new Set([...current, userId])]
+        ? Array.from(new Set([...current, userId]))
         : current.filter((id) => id !== userId);
       return { typingUsers: { ...s.typingUsers, [groupId]: updated } };
     }),
